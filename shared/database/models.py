@@ -26,6 +26,8 @@ class CoverageMeasurement(Base):
     latitude = Column(Float)
     longitude = Column(Float)
     gps_accuracy = Column(Float)
+    location_type = Column(String(10))  # 'gps' (client) or 'ip' (server-derived)
+    location_accuracy = Column(Float)  # meters
 
     # Signal strength data
     signal_strength_dbm = Column(Integer)
@@ -46,3 +48,5 @@ class CoverageMeasurement(Base):
     # Performance data
     download_speed_kbps = Column(Float)
     upload_speed_kbps = Column(Float)
+    latency_ms = Column(Integer)
+    jitter_ms = Column(Integer)

@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS coverage_measurements (
     latitude DOUBLE PRECISION,
     longitude DOUBLE PRECISION,
     gps_accuracy DOUBLE PRECISION,
+    location_type VARCHAR(10),  -- 'gps' (sent by the client) or 'ip' (derived by the server)
+    location_accuracy DOUBLE PRECISION,  -- meters
     
     -- Signal strength data
     signal_strength_dbm INTEGER,
@@ -39,6 +41,8 @@ CREATE TABLE IF NOT EXISTS coverage_measurements (
     data_network_type VARCHAR(50),
     download_speed_kbps DOUBLE PRECISION,
     upload_speed_kbps DOUBLE PRECISION,
+    latency_ms INTEGER,
+    jitter_ms INTEGER,
     
     -- Foreign key constraint
     CONSTRAINT fk_api_key FOREIGN KEY (api_key) REFERENCES api_keys(api_key) ON DELETE CASCADE

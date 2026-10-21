@@ -1,6 +1,6 @@
 # GIGA Coverage API
 
-Open source backend services for the GIGA Coverage Library. This microservices architecture provides three main endpoints for mobile network coverage data collection.
+Open source backend services for the GIGA Coverage Library (Android) and the GIGA Coverage web plugin. This microservices architecture provides the endpoints for network coverage data collection: API key generation, measurement ingestion and the latency/download/upload speed tests.
 
 ## Architecture
 
@@ -16,10 +16,14 @@ Open source backend services for the GIGA Coverage Library. This microservices a
    - Resources: 512MB–1GB RAM
    - Purpose: Validate API key and store coverage measurements in PostgreSQL
 
-3. **upload-service** - Upload speed testing service
-   - Endpoint: `POST /api/test-data-upload`
+3. **test-service** - Speed testing service (formerly `upload-service`)
+   - Endpoints: `GET /api/test-ping`, `GET /api/test-data-download`, `POST /api/test-data-upload`
    - Resources: 1–2GB RAM, 1 CPU core
-   - Purpose: Accept a file upload for client-side speed measurement (data is discarded, not stored)
+   - Purpose: Serve the client-side latency, download and upload measurements (nothing is stored)
+
+4. **geoipupdate** (optional sidecar) - Keeps the MaxMind GeoLite2 City database up to date for IP geolocation in data-service. See [IP geolocation](#ip-geolocation).
+
+All services answer CORS preflight requests so the web plugin can call them from any page (see `CORS_ALLOW_ORIGINS`). The API key always travels in the JSON body, form data or query string, never in a header.
 
 ### Technology Stack
 
@@ -41,7 +45,12 @@ docker-compose up -d
 # API will be available at:
 # http://localhost/api/generate-key
 # http://localhost/api/send-data
+# http://localhost/api/test-ping
+# http://localhost/api/test-data-download?bytes=1000000
 # http://localhost/api/test-data-upload
+
+# Optionally, with MaxMind credentials in .env, add the GeoLite2 updater:
+docker-compose --profile geoip up -d
 ```
 
 ### Production Setup
@@ -139,17 +148,51 @@ Response (`200 OK`):
 | `signal_strength_asu` | int    | No       | Signal strength in ASU                             |
 | `network_type`        | string | No       | Radio access type (e.g. `GSM`, `CDMA`, `LTE`, `NR`) |
 | `data_network_type`   | string | No       | Data connection type                               |
-| `mobile_country_code` | int    | No       | MCC                                                |
-| `network_code`        | int    | No       | MNC                                                |
+| `mobile_country_code` | int    | No       | MCC (digit strings such as `"214"` are accepted)   |
+| `network_code`        | int    | No       | MNC (digit strings such as `"01"` are accepted; stored as an integer) |
 | `cell_id`             | int    | No       | Cell tower ID                                      |
-| `app_name`            | string | No       | Client application name                            |
+| `app_name`            | string | No       | Client application name, or site hostname for the web plugin |
 | `app_version`         | string | No       | Client application version                         |
-| `library_version`     | string | No       | Coverage library version                           |
+| `library_version`     | string | No       | Coverage library version (`v0.1` Android, `web-<semver>` web plugin) |
 | `download_speed`      | float  | No       | Download speed in kbps                             |
 | `upload_speed`        | float  | No       | Upload speed in kbps                               |
-| `timestamp`           | string | No       | ISO 8601 timestamp (defaults to server time)       |
+| `latency_ms`          | int    | No       | Median round-trip time to `/api/test-ping` (web plugin) |
+| `jitter_ms`           | int    | No       | Mean absolute difference between consecutive RTTs (web plugin) |
+| `location_type`       | string | No       | `gps` when the client sent coordinates, `ip` when the server derived them. Set by the server when absent |
+| `location_accuracy`   | float  | No       | Position accuracy in meters (web plugin sends the browser's estimate; the server sets its own for `ip` rows) |
+| `timestamp`           | string | No       | ISO 8601 (`2026-09-07T10:51:54.503Z`, offsets accepted) or epoch milliseconds as a string (`"1757242314503"`). Defaults to server time when absent or unparseable |
 
-### 3. Test Upload Speed
+Every optional field may be omitted or sent as `null`; both are stored as `NULL`. Unknown fields (e.g. Android's `android_id` and `is_position_from_GPS`) are ignored.
+
+**Location.** When `latitude` and `longitude` are present they are stored as sent and `location_type` defaults to `gps` (Android's `0.0`/`0.0` "no fix" values are kept but not labelled). When they are absent, data-service derives an approximate position from the client IP and stores it with `location_type = "ip"` and its accuracy estimate; see [IP geolocation](#ip-geolocation). The IP address itself is never stored.
+
+### 3. Test Latency
+
+Minimal endpoint for round-trip time measurement. No API key is needed; it returns nothing and is as cheap as possible. The web plugin calls it several times and computes latency (median) and jitter.
+
+```
+GET /api/test-ping?t=<cache-buster>
+```
+
+Response: `204 No Content` with `Cache-Control: no-store`. The `t` parameter is ignored.
+
+### 4. Test Download Speed
+
+Serves `bytes` bytes of incompressible random data so the client can time a download.
+
+```
+GET /api/test-data-download?bytes=1000000&t=<cache-buster>
+```
+
+| Query param | Type   | Required | Description                                                          |
+|-------------|--------|----------|----------------------------------------------------------------------|
+| `bytes`     | int    | Yes      | Payload size, between 1 and `MAX_DOWNLOAD_BYTES` (default 10 000 000). Larger values get `400` |
+| `t`         | string | No       | Cache-buster, ignored                                                |
+| `api_key`   | string | No       | Optional. When present it is validated (`401` if invalid)            |
+
+Response: `200` with `Content-Type: application/octet-stream`, an exact `Content-Length`, `Cache-Control: no-store` and no `Content-Encoding`. The payload is streamed in 64 KB chunks, so large sizes do not allocate memory.
+
+### 5. Test Upload Speed
 
 Accepts a multipart file upload for client-side upload speed measurement. The file data is consumed and discarded — nothing is stored. The client library times the request to calculate upload speed.
 
@@ -181,7 +224,7 @@ All endpoints return standard HTTP error codes:
 
 | Code | Meaning                                  |
 |------|------------------------------------------|
-| 400  | Bad request (missing required fields)    |
+| 400  | Bad request (missing required fields, download size out of range) |
 | 401  | Invalid API key                          |
 | 422  | Validation error (wrong field types)     |
 | 500  | Internal server error                    |
@@ -192,8 +235,44 @@ All endpoints return standard HTTP error codes:
 |------------------|----------------|-----------------------------|
 | `/health/key`    | key-service    | Includes database connectivity |
 | `/health/data`   | data-service   | Includes database connectivity |
-| `/health/upload` | upload-service | Service availability only   |
-| `/stats`         | data-service   | Database statistics          |
+| `/health/test`   | test-service   | Service availability only   |
+| `/health/upload` | test-service   | Alias of `/health/test`, kept for existing monitors |
+
+## IP Geolocation
+
+Measurements sent without coordinates (the web plugin when the visitor denies the browser's geolocation prompt) are located approximately from the client IP, using a local copy of the free [MaxMind GeoLite2 City](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data) database. Only the resulting coordinates and an accuracy estimate are stored (`location_type = "ip"`); the IP is neither stored nor logged by the services. Lookups never leave the server.
+
+data-service reads the database from `GEOIP_DB_PATH` (default `/geoip/GeoLite2-City.mmdb`, the `geoip_data` volume). The file is provided and refreshed by the `geoipupdate` container, MaxMind's official updater:
+
+1. Create a free MaxMind account and generate a license key.
+2. Set `GEOIPUPDATE_ACCOUNT_ID` and `GEOIPUPDATE_LICENSE_KEY` in the environment (`.env` locally, the environment tab in Dokploy).
+3. Start the updater: locally `docker-compose --profile geoip up -d`; in Dokploy it is part of the stack.
+
+The updater downloads the database on start and checks for a new version every 72 hours (`GEOIPUPDATE_FREQUENCY`). data-service reopens the file automatically when it changes, so no restart is needed. Without the database (no credentials, updater not running, `GEOIP_ENABLED=false`) data-service logs one warning and stores such measurements without a location. The accuracy stored for IP rows is MaxMind's `accuracy_radius` converted to meters, or `GEOIP_DEFAULT_ACCURACY_M` (25 000 m) when the database gives none.
+
+The client IP is taken from the first entry of `X-Forwarded-For` (set by Traefik and nginx), then `X-Real-IP`, then the socket peer. Private addresses are not looked up, so measurements from the local network are stored without a location. Note that nginx's default access log records client addresses like any web server; set `access_log off;` in `nginx/nginx.conf` if that is not wanted.
+
+## Database Migrations
+
+Schema changes are managed with [Alembic](https://alembic.sqlalchemy.org/), configured in `data-service/alembic/`. data-service runs `alembic upgrade head` programmatically every time it starts (`data-service/migrate.py`), so redeploying the stack is enough to migrate; no manual step is needed and running it again is a no-op. The applied revision is recorded in the `alembic_version` table.
+
+Revisions:
+
+| Revision | Content |
+|----------|---------|
+| `0001`   | Baseline: `api_keys` and `coverage_measurements` as created by `create_all()` before migrations existed. Tables are only created when missing, so on an existing database this revision just records the baseline |
+| `0002`   | Web plugin columns `latency_ms`, `jitter_ms`, `location_type`, `location_accuracy` (skipped for columns that already exist) |
+
+`init.sql` is only used by the development `postgres` container on a brand-new volume; keep it in sync with the models so a fresh development database matches production.
+
+To add a schema change: edit `shared/database/models.py` and `database/init.sql`, then generate and review a revision from the data-service directory (needs `DATABASE_URL` pointing at a migrated database):
+
+```bash
+cd data-service
+DATABASE_URL=postgresql://coverage:coverage@localhost:5432/coverage_db alembic revision --autogenerate -m "describe the change"
+```
+
+Other useful commands from the same directory: `alembic current`, `alembic history`, `alembic upgrade head`, `alembic downgrade -1`.
 
 ## Dokploy Deployment
 
@@ -208,9 +287,20 @@ The `docker-compose.dokploy.yml` file is the deployment configuration used by [D
 |----------------|-------------|-----------------|-----------|-------------|
 | key-service    | 256 MB      | 128 MB          | —         | —           |
 | data-service   | 1 GB        | 512 MB          | —         | —           |
-| upload-service | 2 GB        | 1 GB            | 1.0 core  | 0.5 core    |
+| test-service   | 2 GB        | 1 GB            | 1.0 core  | 0.5 core    |
 
 - **Restart policy** — all services use `restart: unless-stopped` so they recover from crashes automatically.
+- **GeoIP** — the `geoipupdate` container needs `GEOIPUPDATE_ACCOUNT_ID` and `GEOIPUPDATE_LICENSE_KEY` in the Dokploy environment; without them it keeps restarting and data-service works without IP geolocation. The database lives in the `geoip_data` volume.
+
+### HTTPS
+
+The web plugin runs inside HTTPS pages, and browsers block calls from an HTTPS page to a plain `http://` API (mixed content), so the API must be served over HTTPS. Nothing changes in this repository: Traefik terminates TLS and forwards plain HTTP to nginx on the internal network. To enable it in Dokploy:
+
+1. Point a DNS name (an `A` record) at the server. Let's Encrypt needs a real public hostname; the `*.traefik.me` name used during development is not suitable for production certificates.
+2. In the Dokploy application, open **Domains**, add the hostname with the `nginx` service on port 80, enable **HTTPS** and select **Let's Encrypt** as the certificate provider. Dokploy configures Traefik and renews the certificate automatically. Ports 80 and 443 must be reachable from the internet for the challenge.
+3. Enable the HTTP to HTTPS redirect on the same domain so old links keep working.
+
+Afterwards, use `https://<hostname>` as `baseUrl` in the web plugin and in the Android library configuration.
 
 ## Mobile Integration Examples
 
@@ -486,7 +576,7 @@ python -m uvicorn main:app --reload --port 8001
 cd data-service && pip install -r requirements.txt
 python -m uvicorn main:app --reload --port 8002
 
-cd upload-service && pip install -r requirements.txt
+cd test-service && pip install -r requirements.txt
 python -m uvicorn main:app --reload --port 8003
 ```
 
@@ -519,6 +609,13 @@ Copy `.env.example` to `.env` and adjust as needed.
 | `SERVICE_VERSION` | `1.0.0`                                                  | Version reported by services    |
 | `ENVIRONMENT`     | `development`                                            | Runtime environment             |
 | `DEBUG`           | `false`                                                  | Enable debug mode               |
+| `CORS_ALLOW_ORIGINS` | `*`                                                   | Origins allowed to call the API from a browser; `*` or a comma-separated list |
+| `MAX_DOWNLOAD_BYTES` | `10000000`                                            | Maximum size of `/api/test-data-download` |
+| `GEOIP_ENABLED`   | `true`                                                   | Locate measurements without coordinates by IP |
+| `GEOIP_DB_PATH`   | `/geoip/GeoLite2-City.mmdb`                              | Path of the GeoLite2 City database inside data-service |
+| `GEOIP_DEFAULT_ACCURACY_M` | `25000`                                         | Accuracy stored for IP rows when the database gives none |
+| `GEOIPUPDATE_ACCOUNT_ID` | —                                                 | MaxMind account id for the `geoipupdate` container |
+| `GEOIPUPDATE_LICENSE_KEY` | —                                                | MaxMind license key for the `geoipupdate` container |
 
 ## Monitoring & Maintenance
 
@@ -548,15 +645,16 @@ docker-compose exec postgres psql -U coverage coverage_db < backup.sql
 # Scale data service for high load
 docker-compose up -d --scale data-service=3
 
-# Scale upload service
-docker-compose up -d --scale upload-service=2
+# Scale test service
+docker-compose up -d --scale test-service=2
 ```
 
 ## Security Considerations
 
 - Change default PostgreSQL credentials in production
-- Use SSL/TLS certificates for HTTPS
-- Consider rate limiting for public-facing endpoints
+- Serve the API over HTTPS (see [HTTPS](#https)); the web plugin requires it
+- CORS is open (`*`) by default because no cookies or credentials are used; restrict `CORS_ALLOW_ORIGINS` if the API should only serve known sites
+- Consider rate limiting for public-facing endpoints (`/api/generate-key` and the test endpoints are callable from any browser)
 - API keys authenticate devices but are not a substitute for transport-layer security
 
 ## Contributing

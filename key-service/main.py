@@ -8,6 +8,7 @@ from shared import (
     db_manager,
     ApiKey,
     setup_logging,
+    configure_cors,
     ServiceSettings
 )
 SERVICE_NAME = "key-service"
@@ -22,6 +23,7 @@ app = FastAPI(
     title="GIGA Coverage Key Service",
     version=service_settings.service_version
 )
+configure_cors(app)
 db_manager.create_tables()
 
 
@@ -75,6 +77,12 @@ async def generate_api_key(request: GenerateKeyRequest, db: Session = Depends(ge
             api_key=api_key,
             status="success"
         )
+    except HTTPException:
+        # Let client errors through unchanged. Without this, an empty
+        # phone_identifier would raise the 400 "Phone identifier is required"
+        # above, be caught by the generic handler below and reach the client
+        # as a 500 "Failed to generate API key".
+        raise
     except Exception as e:
         logger.error(f"Error generating API key: {e}")
         db.rollback()

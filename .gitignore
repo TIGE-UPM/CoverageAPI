@@ -37,3 +37,6 @@ logs/
 .coverage
 htmlcov/
 .pytest_cache/
+
+# GeoIP databases (delivered through the geoip_data volume, never committed)
+*.mmdb

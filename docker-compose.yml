@@ -9,7 +9,7 @@ services:
     depends_on:
       - key-service
       - data-service
-      - upload-service
+      - test-service
     restart: unless-stopped
 
   # PostgreSQL database
@@ -24,6 +24,11 @@ services:
       - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coverage -d coverage_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
 
   # Key service - lightweight
@@ -33,6 +38,7 @@ services:
       dockerfile: ./key-service/Dockerfile
     environment:
       - PYTHONUNBUFFERED=1
+      - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS:-*}
     deploy:
       resources:
         limits:
@@ -41,7 +47,8 @@ services:
           memory: 128M
     restart: unless-stopped
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
 
   # Data service - medium resources
   data-service:
@@ -51,6 +58,11 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - DATABASE_URL=postgresql://coverage:coverage@postgres:5432/coverage_db
+      - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS:-*}
+      - GEOIP_ENABLED=${GEOIP_ENABLED:-true}
+      - GEOIP_DB_PATH=/geoip/GeoLite2-City.mmdb
+    volumes:
+      - geoip_data:/geoip:ro
     deploy:
       resources:
         limits:
@@ -59,16 +71,19 @@ services:
           memory: 512M
     restart: unless-stopped
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
 
-  # Upload service - high resources
-  upload-service:
+  # Test service - latency, download and upload speed tests
+  test-service:
     build:
       context: .
-      dockerfile: ./upload-service/Dockerfile
+      dockerfile: ./test-service/Dockerfile
     environment:
       - PYTHONUNBUFFERED=1
       - DATABASE_URL=postgresql://coverage:coverage@postgres:5432/coverage_db
+      - CORS_ALLOW_ORIGINS=${CORS_ALLOW_ORIGINS:-*}
+      - MAX_DOWNLOAD_BYTES=${MAX_DOWNLOAD_BYTES:-10000000}
     deploy:
       resources:
         limits:
@@ -79,7 +94,25 @@ services:
           cpus: '0.5'
     restart: unless-stopped
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+
+  # GeoLite2 database updater (optional): downloads and refreshes the MaxMind
+  # City database used by data-service for IP geolocation. Needs a free
+  # MaxMind account. Start it with: docker compose --profile geoip up -d
+  geoipupdate:
+    image: ghcr.io/maxmind/geoipupdate:v7
+    profiles:
+      - geoip
+    environment:
+      - GEOIPUPDATE_ACCOUNT_ID=${GEOIPUPDATE_ACCOUNT_ID}
+      - GEOIPUPDATE_LICENSE_KEY=${GEOIPUPDATE_LICENSE_KEY}
+      - GEOIPUPDATE_EDITION_IDS=GeoLite2-City
+      - GEOIPUPDATE_FREQUENCY=72
+    volumes:
+      - geoip_data:/usr/share/GeoIP
+    restart: unless-stopped
 
 volumes:
   postgres_data:
+  geoip_data:

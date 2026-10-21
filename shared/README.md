@@ -20,6 +20,10 @@ Common utilities and components shared across all GIGA Coverage microservices.
 -   **Environment-based settings**: Centralized configuration management
 -   **Service-specific settings**: Extensible settings for individual services
 
+### CORS
+
+-   **`configure_cors(app)`**: Enables browser access (web plugin) with the origins from `CORS_ALLOW_ORIGINS`
+
 ### Logging
 
 -   **Standardized logging**: Consistent log formatting across services
@@ -97,5 +101,6 @@ shared/
 ├── config/
 │   └── settings.py      # Configuration management
 └── utils/
+    ├── cors.py          # CORS middleware setup
     └── logging.py       # Logging utilities
 ```

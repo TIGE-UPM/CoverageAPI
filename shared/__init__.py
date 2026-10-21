@@ -12,6 +12,7 @@ from .database.models import ApiKey, CoverageMeasurement
 from .auth.validation import validate_api_key
 from .config.settings import settings, Settings, ServiceSettings
 from .utils.logging import setup_logging, get_logger, setup_basic_logging
+from .utils.cors import configure_cors
 from .exceptions import (
     CoverageException,
     DatabaseConnectionError,
@@ -32,6 +33,7 @@ __all__ = [
     "setup_logging",
     "get_logger",
     "setup_basic_logging",
+    "configure_cors",
     "CoverageException",
     "DatabaseConnectionError",
     "InvalidAPIKeyError",

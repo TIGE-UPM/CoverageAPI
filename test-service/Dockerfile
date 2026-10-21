@@ -11,11 +11,11 @@ RUN apt-get update && apt-get install -y \
 COPY ./shared /app/shared
 
 # Copy requirements and install dependencies
-COPY ./upload-service/requirements.txt .
+COPY ./test-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY ./upload-service .
+COPY ./test-service .
 
 # Expose port
 EXPOSE 8000
